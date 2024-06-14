@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,13 +32,13 @@ type KlineItem struct {
 	Timestamp    int64   // 时间戳，单位s
 	Date         string  // 字符串日期 20240523
 	Volume       uint64  // 成交量 单位股
-	Open         int64   // 开盘价 单位分
-	High         int64   // 最高价 单位分
-	Low          int64   // 最低价 单位分
-	Close        int64   // 收盘价 单位分
+	Open         int64   // 开盘价 单位毫
+	High         int64   // 最高价 单位毫
+	Low          int64   // 最低价 单位毫
+	Close        int64   // 收盘价 单位毫
 	TurnoverRate float64 // 换手率
-	Amount       uint64  // 成交额 单位分
-	Chg          int64   // 涨跌额 单位分
+	Amount       uint64  // 成交额 单位毫
+	Chg          int64   // 涨跌额 单位毫
 	Percent      float64 // 涨跌幅 已经乘了100
 	EntityHigh   int64   // 实体最高价
 	EntityLow    int64   // 实体最低价
@@ -47,15 +48,15 @@ type KlineItem struct {
 type StockItem struct {
 	Name   string // 股票名
 	Symbol string // 股票代号 sz399001 sh000001
+	Sid    string // 数据系统内部代号
 }
 
 type LhbStockItem struct {
-	Name        string         // 股票名
-	Symbol      string         // 股票代号 sz399001 sh000001
+	Stock       StockItem
 	Date        string         // 上榜日期
-	BuyTotal    int64          // 买入 单位分
-	SellTotal   int64          // 卖出 单位分
-	NetBuyTotal int64          // 净买入 单位分
+	BuyTotal    int64          // 买入 单位毫
+	SellTotal   int64          // 卖出 单位毫
+	NetBuyTotal int64          // 净买入 单位毫
 	Percent     float64        // 涨跌幅 已经乘了100
 	LhbBranch   LhbStockBranch // 龙虎榜机构数据
 }
@@ -68,9 +69,9 @@ type LhbStockBranch struct {
 type LhbStockBranchItem struct {
 	BranchCode  string // 机构代码
 	Branchname  string // 机构名
-	BuyTotal    int64  // 买入 单位分
-	SellTotal   int64  // 卖出 单位分
-	NetBuyTotal int64  // 净买入 单位分
+	BuyTotal    int64  // 买入 单位毫
+	SellTotal   int64  // 卖出 单位毫
+	NetBuyTotal int64  // 净买入 单位毫
 }
 
 type JRJQuotKline struct {
@@ -100,7 +101,7 @@ type JRJKline struct {
 // @index 缓存文件索引
 // @cache 待缓存的数据或者读取的缓存
 // @read true=读 false=写
-func GetKlineItemsGetOrSet(key string, cache *string, read bool) {
+func getKlineItemsGetOrSet(key string, cache *string, read bool) {
 	work_dir, _ := os.Getwd()
 
 	cache_path := fmt.Sprintf("%s\\%s\\%s.cache", work_dir, "data_center\\cache\\GetKlineItems", key)
@@ -124,8 +125,8 @@ func GetKlineItemsGetOrSet(key string, cache *string, read bool) {
 // @return 按照时间顺序返回每个k线图
 var kline_items_map = make(map[string][]KlineItem)
 
-func GetKlineItems(kline_type KlineType, symbol string, count uint64) []KlineItem {
-	key := fmt.Sprintf("%s_%s_%d_%d", time.Now().Local().Format("20060102"), symbol, kline_type, count)
+func GetKlineItems(kline_type KlineType, stock_item StockItem, count uint64) []KlineItem {
+	key := fmt.Sprintf("%s_%s_%d_%d", time.Now().Local().Format("20060102"), stock_item.Sid, kline_type, count)
 	kline_items, ok := kline_items_map[key]
 	if ok {
 		return kline_items
@@ -148,18 +149,11 @@ func GetKlineItems(kline_type KlineType, symbol string, count uint64) []KlineIte
 	result := make([]KlineItem, 0)
 
 	var body_string string
-	GetKlineItemsGetOrSet(key, &body_string, true)
+	getKlineItemsGetOrSet(key, &body_string, true)
 	if len(body_string) <= 0 {
-		real_symbol := ""
-		if strings.HasPrefix(strings.ToLower(symbol), "sh") {
-			real_symbol = fmt.Sprintf("%d%s", 1, symbol[2:])
-		} else if strings.HasPrefix(strings.ToLower(symbol), "sz") {
-			real_symbol = fmt.Sprintf("%d%s", 2, symbol[2:])
-		}
-
 		format_string := "https://gateway.jrj.com/quot-kline?format=json&securityId=%s&type=%s&direction=left&range.num=%d"
 
-		url := fmt.Sprintf(format_string, real_symbol, kTypeStringMap[kline_type], count)
+		url := fmt.Sprintf(format_string, stock_item.Sid, kTypeStringMap[kline_type], count)
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
 
 		resp, err := http.DefaultClient.Do(req)
@@ -170,7 +164,7 @@ func GetKlineItems(kline_type KlineType, symbol string, count uint64) []KlineIte
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		body_string = string(body)
-		GetKlineItemsGetOrSet(key, &body_string, false)
+		getKlineItemsGetOrSet(key, &body_string, false)
 	}
 
 	body_byte := []byte(body_string)
@@ -183,7 +177,7 @@ func GetKlineItems(kline_type KlineType, symbol string, count uint64) []KlineIte
 			iter.NPreClosePx = iter.NLastPx
 		}
 
-		if iter.NOpenPx == 0 || iter.NLastPx == 0 || iter.NHighPx == 0 || iter.NLowPx == 0 || iter.NTime <= 0 || iter.NPreClosePx <= 0 {
+		if iter.NOpenPx <= 0 || iter.NLastPx <= 0 || iter.NHighPx <= 0 || iter.NLowPx <= 0 || iter.NTime <= 0 || iter.NPreClosePx <= 0 {
 			break
 		}
 
@@ -197,14 +191,14 @@ func GetKlineItems(kline_type KlineType, symbol string, count uint64) []KlineIte
 		}
 
 		item.Volume = iter.LlVolume
-		item.Open = iter.NOpenPx / 100
-		item.High = iter.NHighPx / 100
-		item.Low = iter.NLowPx / 100
-		item.Close = iter.NLastPx / 100
+		item.Open = iter.NOpenPx
+		item.High = iter.NHighPx
+		item.Low = iter.NLowPx
+		item.Close = iter.NLastPx
 		item.TurnoverRate = 0.0
-		item.Amount = iter.LlValue / 100
+		item.Amount = iter.LlValue
 		item.Chg = (item.Close - item.Open)
-		item.Percent = float64(item.Close-(iter.NPreClosePx/100)) / float64(iter.NPreClosePx/100) * 100
+		item.Percent = float64(item.Close-iter.NPreClosePx) / float64(iter.NPreClosePx) * 100
 
 		item.EntityHigh = item.Open
 		item.EntityLow = item.Close
@@ -250,13 +244,14 @@ type JRJHqsDataItem struct {
 	Name string `json:"name"`
 	Code string `json:"code"`
 	Mkt  uint64 `json:"mkt"`
+	Sid  uint64 `json:"sid"`
 }
 
 // @func 读写全部股票数据缓存
 // @index 缓存文件索引
 // @cache 待缓存的数据或者读取的缓存
 // @read true=读 false=写
-func GetWholeStockItemsCacheGetOrSet(key string, cache *string, read bool) {
+func getWholeStockItemsCacheGetOrSet(key string, cache *string, read bool) {
 	work_dir, _ := os.Getwd()
 	cache_path := fmt.Sprintf("%s\\%s\\%s.cache", work_dir, "data_center\\cache\\GetWholeStockItems", key)
 
@@ -274,7 +269,7 @@ func GetWholeStockItemsCacheGetOrSet(key string, cache *string, read bool) {
 
 var stock_items_map = make(map[string][]StockItem)
 
-func GetStockItems(cat uint64) []StockItem {
+func getStockItems(cat uint64) []StockItem {
 	key := fmt.Sprintf("%s_%d", time.Now().Local().Format("20060102"), cat)
 
 	stock_items, ok := stock_items_map[key]
@@ -291,9 +286,9 @@ func GetStockItems(cat uint64) []StockItem {
 		file_key := fmt.Sprintf("%s_%d", key, i)
 
 		var body_string string
-		GetWholeStockItemsCacheGetOrSet(file_key, &body_string, true)
+		getWholeStockItemsCacheGetOrSet(file_key, &body_string, true)
 		if len(body_string) <= 0 {
-			format_string := "{\"start\":%d,\"num\":20,\"currentPage\":%d,\"env\":[1,2],\"cat\":%d,\"column\":5,\"sort\":2}"
+			format_string := "{\"start\":%d,\"num\":20,\"currentPage\":%d,\"env\":[1,2,4,5],\"cat\":%d,\"column\":5,\"sort\":2}"
 			json_payload := fmt.Sprintf(format_string, start, i+1, cat)
 			payload := strings.NewReader(json_payload)
 			req, _ := http.NewRequest(http.MethodPost, url, payload)
@@ -308,7 +303,7 @@ func GetStockItems(cat uint64) []StockItem {
 
 			body_string = string(body)
 
-			GetWholeStockItemsCacheGetOrSet(file_key, &body_string, false)
+			getWholeStockItemsCacheGetOrSet(file_key, &body_string, false)
 		}
 
 		body_byte := []byte(body_string)
@@ -319,10 +314,15 @@ func GetStockItems(cat uint64) []StockItem {
 		for _, iter := range hqs.Data.Hqs {
 			var item StockItem
 			item.Name = iter.Name
-			if iter.Mkt == 1 {
+			item.Sid = strconv.Itoa(int(iter.Sid))
+			if iter.Mkt == 0 {
+				item.Symbol = fmt.Sprintf("BK%s", iter.Code)
+			} else if iter.Mkt == 1 {
 				item.Symbol = fmt.Sprintf("SH%s", iter.Code)
 			} else if iter.Mkt == 2 {
 				item.Symbol = fmt.Sprintf("SZ%s", iter.Code)
+			} else if iter.Mkt == 4 {
+				item.Symbol = fmt.Sprintf("ZZ%s", iter.Code)
 			} else {
 				continue
 			}
@@ -340,13 +340,33 @@ func GetStockItems(cat uint64) []StockItem {
 // @func 获取全A股
 // @return StockItem 返回的全部股票
 func GetWholeStockItems() []StockItem {
-	return GetStockItems(1)
+	return getStockItems(1)
 }
 
 // @func 获取全A Etf
 // @return StockItem 返回的全部etf
 func GetWholeEtfStockItems() []StockItem {
-	return GetStockItems(6)
+	return getStockItems(6)
+}
+
+// @func 获取申万二级行业
+func GetWholeIndustryStockItems() []StockItem {
+	return getStockItems(11)
+}
+
+// @func 获取指数
+func GetWholeIndexStockItems() []StockItem {
+	return getStockItems(10)
+}
+
+// @func 获取概念板块
+func GetWholeConceptStockItems() []StockItem {
+	return getStockItems(13)
+}
+
+// @func 获取全A LOF
+func GetWholeLofStockItems() []StockItem {
+	return getStockItems(7)
 }
 
 type JRJLhb struct {
@@ -364,6 +384,7 @@ type JRJLhbStocks struct {
 	Market         uint64       `json:"market"`
 	Chg            float64      `json:"chg"`
 	StockCode      string       `json:"stockCode"`
+	StockId        uint64       `json:"stockId"`
 	StockName      string       `json:"stockName"`
 	BuyValueTotal  float64      `json:"buyValueTotal"`
 	SellValueTotal float64      `json:"sellValueTotal"`
@@ -388,7 +409,7 @@ type JRJLhbBranchItem struct {
 // @index 缓存文件索引
 // @cache 待缓存的数据或者读取的缓存
 // @read true=读 false=写
-func GetLhbStockItemsGetOrSet(key string, cache *string, read bool) {
+func getLhbStockItemsGetOrSet(key string, cache *string, read bool) {
 	work_dir, _ := os.Getwd()
 	cache_path := fmt.Sprintf("%s\\%s\\%s.cache", work_dir, "data_center\\cache\\GetLhbStockItems", key)
 
@@ -423,7 +444,7 @@ func GetLhbStockItems(date string) []LhbStockItem {
 	format_date := unix.Local().Format("2006-01-02")
 
 	var body_string string
-	GetLhbStockItemsGetOrSet(key, &body_string, true)
+	getLhbStockItemsGetOrSet(key, &body_string, true)
 	if len(body_string) <= 0 {
 		format_string := "{\"queryFlag\":2,\"endDate\":\"%s\",\"pageNum\":0,\"pageSize\":0}"
 		json_payload := fmt.Sprintf(format_string, format_date)
@@ -441,7 +462,7 @@ func GetLhbStockItems(date string) []LhbStockItem {
 
 		body_string = string(body)
 
-		GetLhbStockItemsGetOrSet(key, &body_string, false)
+		getLhbStockItemsGetOrSet(key, &body_string, false)
 	}
 
 	body_byte := []byte(body_string)
@@ -451,19 +472,24 @@ func GetLhbStockItems(date string) []LhbStockItem {
 
 	for _, iter := range lhb.Data.LhbStocks {
 		var item LhbStockItem
-		item.Name = iter.StockName
-		if iter.Market == 1 {
-			item.Symbol = fmt.Sprintf("SH%s", iter.StockCode)
+		item.Stock.Name = iter.StockName
+		item.Stock.Sid = strconv.Itoa(int(iter.StockId))
+		if iter.Market == 0 {
+			item.Stock.Symbol = fmt.Sprintf("BK%s", iter.StockCode)
+		} else if iter.Market == 1 {
+			item.Stock.Symbol = fmt.Sprintf("SH%s", iter.StockCode)
 		} else if iter.Market == 2 {
-			item.Symbol = fmt.Sprintf("SZ%s", iter.StockCode)
+			item.Stock.Symbol = fmt.Sprintf("SZ%s", iter.StockCode)
+		} else if iter.Market == 4 {
+			item.Stock.Symbol = fmt.Sprintf("ZZ%s", iter.StockCode)
 		} else {
 			continue
 		}
 
 		item.Date = date
-		item.BuyTotal = int64(iter.BuyValueTotal * 10000 * 100)
-		item.SellTotal = int64(iter.SellValueTotal * 10000 * 100)
-		item.NetBuyTotal = int64(iter.NetValueTotal * 10000 * 100)
+		item.BuyTotal = int64(iter.BuyValueTotal * 10000 * 10000)
+		item.SellTotal = int64(iter.SellValueTotal * 10000 * 10000)
+		item.NetBuyTotal = int64(iter.NetValueTotal * 10000 * 10000)
 		item.Percent = iter.Chg * 100.0
 
 		if item.BuyTotal <= 0 && item.SellTotal <= 0 && item.NetBuyTotal <= 0 {
@@ -475,9 +501,9 @@ func GetLhbStockItems(date string) []LhbStockItem {
 
 			buy_item.BranchCode = buy_iter.BranchCode
 			buy_item.Branchname = buy_iter.BranchName
-			buy_item.BuyTotal = int64(buy_iter.BuyValue * 10000 * 100)
-			buy_item.SellTotal = int64(buy_iter.SellValue * 10000 * 100)
-			buy_item.NetBuyTotal = int64(buy_iter.NetValue * 10000 * 100)
+			buy_item.BuyTotal = int64(buy_iter.BuyValue * 10000 * 10000)
+			buy_item.SellTotal = int64(buy_iter.SellValue * 10000 * 10000)
+			buy_item.NetBuyTotal = int64(buy_iter.NetValue * 10000 * 10000)
 
 			if buy_item.BuyTotal <= 0 && buy_item.SellTotal <= 0 && buy_item.NetBuyTotal <= 0 {
 				continue
@@ -491,9 +517,9 @@ func GetLhbStockItems(date string) []LhbStockItem {
 
 			sell_item.BranchCode = sell_iter.BranchCode
 			sell_item.Branchname = sell_iter.BranchName
-			sell_item.BuyTotal = int64(sell_iter.BuyValue * 10000 * 100)
-			sell_item.SellTotal = int64(sell_iter.SellValue * 10000 * 100)
-			sell_item.NetBuyTotal = int64(sell_iter.NetValue * 10000 * 100)
+			sell_item.BuyTotal = int64(sell_iter.BuyValue * 10000 * 10000)
+			sell_item.SellTotal = int64(sell_iter.SellValue * 10000 * 10000)
+			sell_item.NetBuyTotal = int64(sell_iter.NetValue * 10000 * 10000)
 
 			if sell_item.BuyTotal <= 0 && sell_item.SellTotal <= 0 && sell_item.NetBuyTotal <= 0 {
 				continue
