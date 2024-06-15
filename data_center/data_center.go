@@ -337,6 +337,91 @@ func getStockItems(cat uint64) []StockItem {
 	return result
 }
 
+func getIndexStockItemsCacheGetOrSet(key string, cache *string, read bool) {
+	work_dir, _ := os.Getwd()
+	cache_path := fmt.Sprintf("%s\\%s\\%s.cache", work_dir, "data_center\\cache\\GetWholeIndexStockItems", key)
+
+	if read {
+		file, err := os.ReadFile(cache_path)
+		if err != nil {
+			return
+		}
+		*cache = string(file)
+	} else {
+		cache_byte := []byte(*cache)
+		os.WriteFile(cache_path, cache_byte, 0)
+	}
+}
+
+// @func 获取成分股
+func getIndexStockItems(cat uint64) []StockItem {
+	key := fmt.Sprintf("%s_%d", time.Now().Local().Format("20060102"), cat)
+
+	stock_items, ok := stock_items_map[key]
+	if ok {
+		return stock_items
+	}
+	url := "https://gateway.jrj.com/quot-feed/board_sample"
+
+	result := make([]StockItem, 0)
+
+	for i := 0; i < 300; i++ {
+		start := uint64(i * 20)
+
+		file_key := fmt.Sprintf("%s_%d", key, i)
+
+		var body_string string
+		getIndexStockItemsCacheGetOrSet(file_key, &body_string, true)
+		if len(body_string) <= 0 {
+			format_string := "{\"start\":%d,\"num\":20,\"currentPage\":%d,\"env\":[1,2,4,5],\"cat\":%d,\"column\":5,\"sort\":2}"
+			json_payload := fmt.Sprintf(format_string, start, i+1, cat)
+			payload := strings.NewReader(json_payload)
+			req, _ := http.NewRequest(http.MethodPost, url, payload)
+			req.Header.Add("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+
+			body_string = string(body)
+
+			getIndexStockItemsCacheGetOrSet(file_key, &body_string, false)
+		}
+
+		body_byte := []byte(body_string)
+
+		var hqs JRJHqs
+		json.Unmarshal(body_byte, &hqs)
+
+		for _, iter := range hqs.Data.Hqs {
+			var item StockItem
+			item.Name = iter.Name
+			item.Sid = strconv.Itoa(int(iter.Sid))
+			if iter.Mkt == 0 {
+				item.Symbol = fmt.Sprintf("BK%s", iter.Code)
+			} else if iter.Mkt == 1 {
+				item.Symbol = fmt.Sprintf("SH%s", iter.Code)
+			} else if iter.Mkt == 2 {
+				item.Symbol = fmt.Sprintf("SZ%s", iter.Code)
+			} else if iter.Mkt == 4 {
+				item.Symbol = fmt.Sprintf("ZZ%s", iter.Code)
+			} else {
+				continue
+			}
+			result = append(result, item)
+		}
+	}
+
+	stock_items_map[key] = result
+
+	fmt.Printf("GetIndexStockItems, Total %d\n", len(result))
+
+	return result
+}
+
 // @func 获取全A股
 // @return StockItem 返回的全部股票
 func GetWholeStockItems() []StockItem {
@@ -367,6 +452,12 @@ func GetWholeConceptStockItems() []StockItem {
 // @func 获取全A LOF
 func GetWholeLofStockItems() []StockItem {
 	return getStockItems(7)
+}
+
+// @func 获取成分股
+func GetIndexContainStockItems(stock_item StockItem) []StockItem {
+	cat, _ := strconv.Atoi(stock_item.Sid)
+	return getIndexStockItems(uint64(cat))
 }
 
 type JRJLhb struct {
